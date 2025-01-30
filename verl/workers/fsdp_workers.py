@@ -565,7 +565,7 @@ class CriticWorker(Worker):
         torch_dtype = self.config.model.fsdp_config.get('model_dtype', 'fp32')
         torch_dtype = PrecisionType.to_dtype(torch_dtype)
 
-        from transformers import AutoConfig, AutoModelForCausalLM
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoModelForTokenClassification
         from torch import nn
 
         trust_remote_code = config.model.get('trust_remote_code', False)
@@ -586,13 +586,23 @@ class CriticWorker(Worker):
             warnings.simplefilter("ignore")
             setattr(critic_model_config, 'classifier_dropout', 0.)
             setattr(critic_model_config, 'hidden_dropout', '0')
-            critic_module = AutoModelForCausalLM.from_pretrained(
-                pretrained_model_name_or_path=local_path,
-                torch_dtype=torch_dtype,
-                config=critic_model_config,
-                attn_implementation='flash_attention_2',
-                trust_remote_code=trust_remote_code
-            )
+            # local path에 exaone이 없는 경우
+            if 'exaone' in local_path:
+                critic_module = AutoModelForCausalLM.from_pretrained(
+                    pretrained_model_name_or_path=local_path,
+                    torch_dtype=torch_dtype,
+                    config=critic_model_config,
+                    attn_implementation='flash_attention_2',
+                    trust_remote_code=trust_remote_code
+                )
+            else:
+                critic_module = AutoModelForTokenClassification.from_pretrained(
+                    pretrained_model_name_or_path=local_path,
+                    torch_dtype=torch_dtype,
+                    config=critic_model_config,
+                    attn_implementation='flash_attention_2',
+                    trust_remote_code=trust_remote_code
+                )
 
             # some parameters may not in torch_dtype
             critic_module.to(torch_dtype)
