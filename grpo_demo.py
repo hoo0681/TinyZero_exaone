@@ -2,7 +2,7 @@
 import re
 import torch
 from datasets import load_dataset, Dataset, concatenate_datasets, Features, Value
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig
 from trl import GRPOConfig, GRPOTrainer
 from typing import Optional
@@ -57,7 +57,7 @@ def get_gsm8k_questions(split = "train") -> Dataset:
     return data # type: ignore
 
 def get_hrm8k_questions(split = "test") -> Dataset:
-    data_category = ["GSM8K", "MATH", "OMNI_MATH", "MMMLU", "KSM"]
+    data_category = ["GSM8K"]#, "MATH", "OMNI_MATH", "MMMLU", "KSM"]
     datasets = []
     for category in data_category:
         # 각 데이터셋을 개별적으로 로드하고 변환
@@ -162,8 +162,8 @@ def xmlcount_reward_func(completions, **kwargs) -> list[float]:
     return [count_xml(c) for c in contents]
 
 #model_name = "meta-llama/Llama-3.2-1B-Instruct"
-model_name = "Qwen/Qwen2.5-1.5B-Instruct"
-
+# model_name = "Qwen/Qwen2.5-1.5B-Instruct"
+model_name = "Qwen/Qwen2.5-0.5B-Instruct"
 if "Llama" in model_name:
     output_dir = "outputs/Llama-1B-GRPO"
     run_name = "Llama-1B-GRPO-gsm8k"
@@ -184,7 +184,7 @@ training_args = GRPOConfig(
     bf16=True,
     per_device_train_batch_size=1,
     gradient_accumulation_steps=4,
-    num_generations=16,
+    num_generations=2,
     max_prompt_length=256,
     max_completion_length=786,
     num_train_epochs=1,
@@ -192,6 +192,9 @@ training_args = GRPOConfig(
     max_grad_norm=0.1,
     report_to="wandb",
     log_on_each_node=False,
+    use_vllm=False,
+    # vllm_device="cuda:0",
+    # vllm_gpu_memory_utilization=0.6,
 )
 peft_config = LoraConfig(
     r=16,
@@ -202,10 +205,13 @@ peft_config = LoraConfig(
 )
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype=torch.bfloat16,
+    # torch_dtype=torch.bfloat16,
+    # load_in_4bit=True,
+    quantization_config=BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,bnb_4bit_quant_type="nf4",bnb_4bit_use_double_quant=True,),
     attn_implementation="flash_attention_2",
-    device_map=None
-).to("cuda")
+    device_map="auto"
+)#.to("cuda")
+print(model.get_memory_footprint())
         
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token
@@ -222,6 +228,6 @@ trainer = GRPOTrainer(
         correctness_reward_func],
     args=training_args,
     train_dataset=dataset,
-    #peft_config=peft_config
+    peft_config=peft_config
 )
 trainer.train()

@@ -16,6 +16,8 @@ then
     conda create -n zero python=3.9 -y
 fi
 
+# conda 환경 활성화
+eval "$(conda shell.bash hook)"
 conda activate zero
 # source activate zero
 
