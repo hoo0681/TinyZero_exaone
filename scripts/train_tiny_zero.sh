@@ -1,8 +1,10 @@
-export N_GPUS=1
-export ROLLOUT_TP_SIZE=1
+export N_GPUS=8
+export ROLLOUT_TP_SIZE=8
 export DATA_DIR=./dataset
-export BASE_MODEL=LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct
-export EXPERIMENT_NAME=countdown-exaone-3.5-2.4b
+# export BASE_MODEL=LGAI-EXAONE/EXAONE-3.5-2.4B-Instruct
+export BASE_MODEL=OLAResearch/OLAF2-14B
+# export EXPERIMENT_NAME=countdown-exaone-3.5-2.4b
+export EXPERIMENT_NAME=countdown-olaf2-14b
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export WANDB_API_KEY=d1464c4e24c3689d4edb57d73159eaf58c1942b0
 # export TRANSFORMERS_TRUST_REMOTE_CODE=1
