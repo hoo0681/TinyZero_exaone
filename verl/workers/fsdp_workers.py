@@ -125,26 +125,28 @@ class ActorRolloutRefWorker(Worker):
         from torch import optim
 
         log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
+        # 모델 경로를 복사하여 로컬 경로로 저장
         local_path = copy_local_path_from_hdfs(model_path)
 
         # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
         # TODO(zhangchi.usc1992): 1. support create from random initialized model. 2. Support init with FSDP directly
-        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
+        self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code) # 토크나이저 초기화
 
-        torch_dtype = fsdp_config.get('model_dtype', None)
+        torch_dtype = fsdp_config.get('model_dtype', None) # 모델 데이터 타입 설정
         if torch_dtype is None:
-            torch_dtype = torch.float32 if self._is_actor else torch.bfloat16
+            torch_dtype = torch.float32 if self._is_actor else torch.bfloat16 # 모델 데이터 타입 설정
         else:
-            torch_dtype = PrecisionType.to_dtype(torch_dtype)
+            torch_dtype = PrecisionType.to_dtype(torch_dtype) # 모델 데이터 타입 설정
 
         # override model kwargs
-        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
+        actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code) # 모델 설정 초기화
 
         if use_remove_padding:
             from verl.models.registry import check_model_support_rmpad
             check_model_support_rmpad(actor_model_config.model_type)
 
         if use_remove_padding and self.ulysses_sequence_parallel_size > 1:
+            # flash attention 적용
             from verl.models.transformers.monkey_patch import apply_monkey_patch
             apply_monkey_patch(actor_model_config, verbose=True)
 
@@ -154,14 +156,15 @@ class ActorRolloutRefWorker(Worker):
             'pad_token_id': self.tokenizer.pad_token_id,
         }
         override_config_kwargs.update(override_model_config)
-        update_model_config(actor_model_config, override_config_kwargs=override_config_kwargs)
+        update_model_config(actor_model_config, override_config_kwargs=override_config_kwargs) # 모델 설정 업데이트
         if self.rank == 0:
             print(f'Model config after override: {actor_model_config}')
 
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
+        # 처음 시작하는 rank(?), device(?) 같은거 
         init_context = get_init_weight_context_manager(use_meta_tensor=not actor_model_config.tie_word_embeddings)
 
-        with init_context(), warnings.catch_warnings():
+        with init_context(), warnings.catch_warnings(): #해당 디바이스에서 모델 초기화
             warnings.simplefilter("ignore")
             actor_module = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=local_path,
                                                                 torch_dtype=torch_dtype,
@@ -173,10 +176,10 @@ class ActorRolloutRefWorker(Worker):
 
             if enable_gradient_checkpointing:
                 actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
-        torch.distributed.barrier()
+        torch.distributed.barrier() # 모든 프로세스가 동기화될 때까지 대기
 
         if self.rank == 0:
-            print_model_size(actor_module)
+            print_model_size(actor_module) # 모델 크기 출력
 
         log_gpu_memory_usage('After init from HF AutoModel', logger=logger)
 
@@ -322,7 +325,7 @@ class ActorRolloutRefWorker(Worker):
                 offload_fsdp_optimizer(optimizer=self.actor_optimizer)
                 log_gpu_memory_usage('After offload actor optimizer during init', logger=logger)
         # load from checkpoint
-        if self._is_actor:
+        if self._is_actor: # role=actor_rollout에서 활성화 됨
             OmegaConf.set_struct(self.config.actor, True)
             with open_dict(self.config.actor):
                 self.config.actor.use_remove_padding = use_remove_padding
@@ -330,10 +333,10 @@ class ActorRolloutRefWorker(Worker):
                                               actor_module=self.actor_module_fsdp,
                                               actor_optimizer=self.actor_optimizer)
 
-        if self._is_rollout:
+        if self._is_rollout: # role=actor_rollout에서 활성화 됨
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
-        if self._is_ref:
+        if self._is_ref: # role=ref에서 활성화 됨
             self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
                                                                fsdp_config=self.config.ref.fsdp_config,
                                                                optim_config=None,
@@ -349,7 +352,7 @@ class ActorRolloutRefWorker(Worker):
                 self.config.ref.use_remove_padding = use_remove_padding
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
 
-        if self._is_actor:
+        if self._is_actor: # role=actor_rollout에서 활성화 됨
             self.flops_counter = FlopsCounter(self.actor_model_config)
 
         torch.cuda.empty_cache()
@@ -414,7 +417,7 @@ class ActorRolloutRefWorker(Worker):
         prompts.batch = prompts.batch.cuda()
         meta_info = {'eos_token_id': self.tokenizer.eos_token_id, 'pad_token_id': self.tokenizer.pad_token_id}
         prompts.meta_info.update(meta_info)
-        with self.rollout_sharding_manager:
+        with self.rollout_sharding_manager: #여기서 self.inference_engine.sync_model_weights(params, load_format=load_format) 호출 actor와 rollout의 모델 동기화
             log_gpu_memory_usage('After entering rollout sharding manager', logger=logger)
 
             prompts = self.rollout_sharding_manager.preprocess_data(prompts)
