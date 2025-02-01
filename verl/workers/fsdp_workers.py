@@ -13,6 +13,7 @@
 # limitations under the License.
 """
 The main entry point to run the PPO algorithm
+핵심 코드
 """
 
 import logging
@@ -58,52 +59,53 @@ class ActorRolloutRefWorker(Worker):
             torch.distributed.init_process_group(backend="nccl")
 
         # build device mesh for FSDP
-        world_size = torch.distributed.get_world_size()
+        world_size = torch.distributed.get_world_size() # 전체 gpu 수
         from torch.distributed.device_mesh import init_device_mesh
         # TODO(sgm): support FSDP hybrid shard for larger model
-        self.device_mesh = init_device_mesh('cuda', mesh_shape=(world_size,), mesh_dim_names=['fsdp'])
+        self.device_mesh = init_device_mesh('cuda', mesh_shape=(world_size,), mesh_dim_names=['fsdp']) # mesh_shape=(전체 gpu 수)
 
-        # build device mesh for Ulysses Sequence Parallel
+        # build device mesh for Ulysses Sequence Parallel -> Ulysses Sequence Parallel는 아주 긴 문장을 처리하기 위해 사용되는 기술 DEEP SPEED에서 제공하는 기술
         self.ulysses_device_mesh = None
-        self.ulysses_sequence_parallel_size = self.config.actor.get('ulysses_sequence_parallel_size', 1)
-        dp = world_size // self.ulysses_sequence_parallel_size
-        if self.ulysses_sequence_parallel_size > 1:
+        self.ulysses_sequence_parallel_size = self.config.actor.get('ulysses_sequence_parallel_size', 1) # 기본값은 1
+        dp = world_size // self.ulysses_sequence_parallel_size # 정확히 어떤 식으로 작동하게 될지는 잘 모르겠음
+        if self.ulysses_sequence_parallel_size > 1: # 기본값은 1 기본값대로라면 이 블록은 실행되지 않음
             self.ulysses_device_mesh = init_device_mesh('cuda',
                                                         mesh_shape=(dp, self.ulysses_sequence_parallel_size),
                                                         mesh_dim_names=['dp', 'sp'])
 
         self.ulysses_sharding_manager = FSDPUlyssesShardingManager(self.ulysses_device_mesh)
 
-        self.role = role
+        self.role = role # grpo에서는 'actor_rollout', 'ref' 만 사용됨
         assert self.role in ['actor', 'rollout', 'ref', 'actor_rollout', 'actor_rollout_ref']
 
-        self._is_actor = self.role in ['actor', 'actor_rollout', 'actor_rollout_ref']
+        self._is_actor = self.role in ['actor', 'actor_rollout', 'actor_rollout_ref'] 
         self._is_rollout = self.role in ['rollout', 'actor_rollout', 'actor_rollout_ref']
         self._is_ref = self.role in ['ref', 'actor_rollout_ref']
 
-        self._is_offload_param = False
+        self._is_offload_param = False # 
         self._is_offload_grad = False
         self._is_offload_optimizer = False
         if self._is_actor:
-            self._is_offload_param = self.config.actor.fsdp_config.get('param_offload', False)
-            self._is_offload_grad = self.config.actor.fsdp_config.get('grad_offload', False)
-            self._is_offload_optimizer = self.config.actor.fsdp_config.get('optimizer_offload', False)
-        elif self._is_ref:
+            self._is_offload_param = self.config.actor.fsdp_config.get('param_offload', False) # 기본값은 False
+            self._is_offload_grad = self.config.actor.fsdp_config.get('grad_offload', False) # 기본값은 False
+            self._is_offload_optimizer = self.config.actor.fsdp_config.get('optimizer_offload', False) # 기본값은 False
+        elif self._is_ref: # train_tiny_zero_a100_grpo.sh에서는 True로 설정되어 있음
             # TODO: it seems that manual offload is slowly than FSDP offload
             self._is_offload_param = self.config.ref.fsdp_config.get('param_offload', False)
 
         # normalize config
-        if self._is_actor:
-            self.config.actor.ppo_mini_batch_size //= (self.device_mesh.shape[0] // self.ulysses_sequence_parallel_size)
+        # gradient_accumulation = config.ppo_mini_batch_size // config.ppo_micro_batch_size 으로 계산된다. 이때 나머지는 0이어야한다.
+        if self._is_actor: # role=actor_rollout에서 활성화 됨
+            self.config.actor.ppo_mini_batch_size //= (self.device_mesh.shape[0] // self.ulysses_sequence_parallel_size) # 전체 gpu 수 // 1
             self.config.actor.ppo_micro_batch_size //= (self.device_mesh.shape[0] //
-                                                        self.ulysses_sequence_parallel_size)
-            self.config.actor.ppo_mini_batch_size *= self.config.rollout.n
-            self.config.actor.ppo_micro_batch_size *= self.config.rollout.n
-        if self._is_rollout:
+                                                        self.ulysses_sequence_parallel_size) # 전체 gpu 수 // 1
+            self.config.actor.ppo_mini_batch_size *= self.config.rollout.n # rollout수를 곱함
+            self.config.actor.ppo_micro_batch_size *= self.config.rollout.n # rollout수를 곱함
+        if self._is_rollout: # role=actor_rollout에서 활성화 됨
             self.config.rollout.log_prob_micro_batch_size //= (self.device_mesh.shape[0] //
                                                                self.ulysses_sequence_parallel_size)
             self.config.rollout.log_prob_micro_batch_size *= self.config.rollout.n
-        if self._is_ref:
+        if self._is_ref: # role=ref에서 활성화 됨
             self.config.ref.log_prob_micro_batch_size //= (self.device_mesh.shape[0] //
                                                            self.ulysses_sequence_parallel_size)
             self.config.ref.log_prob_micro_batch_size *= self.config.rollout.n
@@ -193,7 +195,7 @@ class ActorRolloutRefWorker(Worker):
 
         if self._is_ref:
             mixed_precision = None
-
+        # 병렬 처리를 위해 모델을 래핑
         auto_wrap_policy = get_fsdp_wrap_policy(module=actor_module, config=fsdp_config.get('wrap_policy', None))
 
         if self._is_rollout and self.config.rollout.name == 'hf':
@@ -372,7 +374,7 @@ class ActorRolloutRefWorker(Worker):
             data = self.ulysses_sharding_manager.preprocess_data(data=data)
             # perform training
             with Timer(name='update_policy', logger=None) as timer:
-                metrics = self.actor.update_policy(data=data)
+                metrics = self.actor.update_policy(data=data) # loss계산 및 업데이트
             delta_time = timer.last
             global_num_tokens = data.meta_info['global_token_num']
             estimated_flops, promised_flops = self.flops_counter.estimate_flops(global_num_tokens, delta_time)

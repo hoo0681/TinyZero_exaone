@@ -57,8 +57,8 @@ class ResourcePoolManager:
     Define a resource pool specification. Resource pool will be initialized first.
     Mapping
     """
-    resource_pool_spec: dict[str, list[int]]
-    mapping: dict[Role, str]
+    resource_pool_spec: dict[str, list[int]] # 리소스 이름, (노드, 프로세스 개수)
+    mapping: dict[Role, str] # 역할, 리소스 이름
     resource_pool_dict: dict[str, RayResourcePool] = field(default_factory=dict)
 
     def create_resource_pool(self):
@@ -70,11 +70,11 @@ class ResourcePoolManager:
                                             use_gpu=True,
                                             max_colocate_count=1,
                                             name_prefix=resource_pool_name)
-            self.resource_pool_dict[resource_pool_name] = resource_pool
+            self.resource_pool_dict[resource_pool_name] = resource_pool # 리소스 이름: 리소스 객체 딕셔너리 생성
 
     def get_resource_pool(self, role: Role) -> RayResourcePool:
         """Get the resource pool of the worker_cls"""
-        return self.resource_pool_dict[self.mapping[role]]
+        return self.resource_pool_dict[self.mapping[role]] # 역할에 해당하는 리소스 풀 반환
 
 
 import torch
@@ -311,35 +311,40 @@ class RayPPOTrainer(object):
         self.reward_fn = reward_fn
         self.val_reward_fn = val_reward_fn
 
-        self.hybrid_engine = config.actor_rollout_ref.hybrid_engine
-        assert self.hybrid_engine, 'Currently, only support hybrid engine'
+        self.hybrid_engine = config.actor_rollout_ref.hybrid_engine # 기본값 True
+        assert self.hybrid_engine, 'Currently, only support hybrid engine' # 현재 하이브리드 엔진만 지원
 
         if self.hybrid_engine:
-            assert Role.ActorRollout in role_worker_mapping, f'{role_worker_mapping.keys()=}'
+            assert Role.ActorRollout in role_worker_mapping, f'{role_worker_mapping.keys()=}' # 역할과 작업자 매핑에 ActorRollout가 있는지 확인
 
-        self.role_worker_mapping = role_worker_mapping
-        self.resource_pool_manager = resource_pool_manager
-        self.use_reference_policy = Role.RefPolicy in role_worker_mapping
-        self.use_rm = Role.RewardModel in role_worker_mapping
-        self.ray_worker_group_cls = ray_worker_group_cls
+        self.role_worker_mapping = role_worker_mapping # 역할과 작업자 매핑
+        self.resource_pool_manager = resource_pool_manager # 리소스 풀 관리자
+        self.use_reference_policy = Role.RefPolicy in role_worker_mapping # reference policy 사용 여부
+        self.use_rm = Role.RewardModel in role_worker_mapping # reward model 사용 여부
+        self.ray_worker_group_cls = ray_worker_group_cls # 레이 작업자 그룹 클래스
 
         # define KL control
-        if self.use_reference_policy:
-            if config.algorithm.kl_ctrl.type == 'fixed':
-                self.kl_ctrl = core_algos.FixedKLController(kl_coef=config.algorithm.kl_ctrl.kl_coef)
-            elif config.algorithm.kl_ctrl.type == 'adaptive':
-                assert config.algorithm.kl_ctrl.horizon > 0, f'horizon must be larger than 0. Got {config.critic.kl_ctrl.horizon}'
+        if self.use_reference_policy: # reference policy 사용하는 경우
+            if config.algorithm.kl_ctrl.type == 'fixed': # 설정에서 kl_ctrl 타입이 fixed인 경우 -> 기본값
+                self.kl_ctrl = core_algos.FixedKLController(kl_coef=config.algorithm.kl_ctrl.kl_coef) # 고정된 kl 계수 사용
+            elif config.algorithm.kl_ctrl.type == 'adaptive': # kl_ctrl 타입이 adaptive인 경우
+                assert config.algorithm.kl_ctrl.horizon > 0, f'horizon must be larger than 0. Got {config.critic.kl_ctrl.horizon}' 
+                # horizon이 0보다 크지 않으면 오류 발생 horizon은 
                 self.kl_ctrl = core_algos.AdaptiveKLController(init_kl_coef=config.algorithm.kl_ctrl.kl_coef,
                                                                target_kl=config.algorithm.kl_ctrl.target_kl,
                                                                horizon=config.algorithm.kl_ctrl.horizon)
             else:
                 raise NotImplementedError
         else:
-            self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.)
+            self.kl_ctrl = core_algos.FixedKLController(kl_coef=0.) # reference policy 사용하지 않는 경우 kl_coef를 0으로 설정 그리고 값을 고정
 
         self._create_dataloader()
 
     def _create_dataloader(self):
+        """
+        학습과 검증을 위한 데이터로더를 생성합니다.
+        총 학습 스텝 수를 계산하고 actor/critic 최적화 설정에 주입합니다.
+        """
         from torch.utils.data import DataLoader
         # TODO: we have to make sure the batch size is divisible by the dp size
         from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
@@ -376,27 +381,28 @@ class RayPPOTrainer(object):
         print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
-        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
+        # 총 학습 스텝 수를 actor/critic 최적화 설정에 직접 주입. 임시 조치 같음
+        total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs 
+        
+        if self.config.trainer.total_training_steps is not None: # total_training_steps가 설정에 있는 경우 -> 기본값은 null임
+            total_training_steps = self.config.trainer.total_training_steps # 설정에 있는 total_training_steps 사용
 
-        if self.config.trainer.total_training_steps is not None:
-            total_training_steps = self.config.trainer.total_training_steps
-
-        self.total_training_steps = total_training_steps
+        self.total_training_steps = total_training_steps # 총 학습 스텝 수 설정
         print(f'Total training steps: {self.total_training_steps}')
 
-        OmegaConf.set_struct(self.config, True)
+        OmegaConf.set_struct(self.config, True) # 설정을 고정된 구조로 설정
         with open_dict(self.config):
-            self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps
-            self.config.critic.optim.total_training_steps = total_training_steps
+            self.config.actor_rollout_ref.actor.optim.total_training_steps = total_training_steps # 오버라이드
+            self.config.critic.optim.total_training_steps = total_training_steps # 오버라이드
 
     def _validate(self):
         reward_tensor_lst = []
         data_source_lst = []
-        for test_data in self.val_dataloader:
-            test_batch = DataProto.from_single_dict(test_data)
+        for test_data in self.val_dataloader: # 모든 평가 데이터들에 대해서 반복
+            test_batch = DataProto.from_single_dict(test_data) # 데이터를 DataProto로 변환
             # test_batch = test_batch.to('cuda')
 
-            # we only do validation on rule-based rm
+            # 모델 기반 보상 모델만 평가 아니면 무시
             if self.config.reward_model.enable and test_batch[0].non_tensor_batch['reward_model']['style'] == 'model':
                 return {}
 
@@ -410,30 +416,34 @@ class RayPPOTrainer(object):
             }
 
             # pad to be divisible by dp_size
+            # 데이터를 actor_rollout_ref.rollout.tensor_model_parallel_size값인 dp_size의 배수 크기로 패딩
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
-            # unpad
+            # ActorRolloutWorker의 generate_sequences 메서드를 호출하여 테스트 데이터를 생성
+            test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded) # TODO 자세한 건 나중에 확인
+            # 패딩된 데이터를 원래 크기로 되돌림
             test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             print('validation generation end')
 
-            test_batch = test_batch.union(test_output_gen_batch)
+            test_batch = test_batch.union(test_output_gen_batch) # 정확히 이해 못함 meta데이터들을 합친다는 것인지 분산처리된 데이터들을 합친다는 것인지...
 
             # evaluate using reward_function
             # for certain reward function (e.g. sandbox), the generation can overlap with reward
-            reward_tensor = self.val_reward_fn(test_batch)
+            reward_tensor = self.val_reward_fn(test_batch)# 데이터를 받아서 보상 함수를 통해 보상 계산
 
-            reward_tensor_lst.append(reward_tensor)
+            reward_tensor_lst.append(reward_tensor) # 보상 텐서 리스트에 추가
+            # test_batch.non_tensor_batch는 데이터의 메타데이터를 담고 있는 것 같음
+            # 만약에 데이터 소스에 대한 정보가 없으면 unknown으로 채움
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
-        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
-        data_sources = np.concatenate(data_source_lst, axis=0)
-        # evaluate test_score based on data source
+        reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,) 보상 텐서 리스트를 연결하고 마지막 차원을 합침
+        data_sources = np.concatenate(data_source_lst, axis=0) # 데이터 소스 리스트를 연결
+        # 데이터 소스에 따라 평가 점수 계산
         data_source_reward = {}
         for i in range(reward_tensor.shape[0]):
             data_source = data_sources[i]
             if data_source not in data_source_reward:
                 data_source_reward[data_source] = []
-            data_source_reward[data_source].append(reward_tensor[i].item())
+            data_source_reward[data_source].append(reward_tensor[i].item()) # 데이터 소스에 따라 평가 점수 계산
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
@@ -442,8 +452,11 @@ class RayPPOTrainer(object):
         return metric_dict
 
     def init_workers(self):
-        """Init resource pool and worker group"""
-        self.resource_pool_manager.create_resource_pool()
+        """
+        리소스 풀과 워커 그룹을 초기화합니다.
+        Actor, Critic, Reference Policy, Reward Model 등의 워커를 생성합니다.
+        """
+        self.resource_pool_manager.create_resource_pool() # 리소스 풀 생성
 
         self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
 
@@ -464,12 +477,13 @@ class RayPPOTrainer(object):
             self.resource_pool_to_cls[resource_pool]['critic'] = critic_cls
             self.use_critic = True
         elif self.config.algorithm.adv_estimator == 'grpo':
+            # grpo에서는 critic을 사용하지 않음
             self.use_critic = False
         else:
             raise NotImplementedError
 
         # create reference policy if needed
-        if self.use_reference_policy:
+        if self.use_reference_policy: # 기본값은 true
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RefPolicy)
             ref_policy_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RefPolicy],
                                                   config=self.config.actor_rollout_ref,
@@ -477,7 +491,7 @@ class RayPPOTrainer(object):
             self.resource_pool_to_cls[resource_pool]['ref'] = ref_policy_cls
 
         # create a reward model if reward_fn is None
-        if self.use_rm:
+        if self.use_rm: # reward model이 활성화 되어 있으면; 기본값은 false
             # we create a RM here
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.RewardModel)
             rm_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.RewardModel], config=self.config.reward_model)
@@ -497,20 +511,20 @@ class RayPPOTrainer(object):
             # keep the referece of WorkerDict to support ray >= 2.31. Ref: https://github.com/ray-project/ray/pull/45699
             self.wg_dicts.append(wg_dict)
 
-        if self.use_critic:
+        if self.use_critic: # grpo에서는 사용하지 않음
             self.critic_wg = all_wg['critic']
             self.critic_wg.init_model()
 
-        if self.use_reference_policy:
-            self.ref_policy_wg = all_wg['ref']
-            self.ref_policy_wg.init_model()
+        if self.use_reference_policy: # 기본값은 true
+            self.ref_policy_wg = all_wg['ref'] # ActorRolloutRefWorker를 반환할 것으로 예상
+            self.ref_policy_wg.init_model() # 이건 fsdp_workers.py에 있는 init_model 메서드를 호출할 것으로 예상(메가트론을 사용하지 않는다면)
 
-        if self.use_rm:
+        if self.use_rm: # reward model이 활성화 되어 있으면; 기본값은 false
             self.rm_wg = all_wg['rm']
             self.rm_wg.init_model()
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
-        self.actor_rollout_wg = all_wg['actor_rollout']
+        self.actor_rollout_wg = all_wg['actor_rollout'] # ActorRolloutRefWorker를 반환할 것으로 예상
         self.actor_rollout_wg.init_model()
 
     def _save_checkpoint(self):
@@ -546,9 +560,9 @@ class RayPPOTrainer(object):
 
     def fit(self):
         """
-        The training loop of PPO.
-        The driver process only need to call the compute functions of the worker group through RPC to construct the PPO dataflow.
-        The light-weight advantage computation is done on the driver process.
+        PPO 학습 루프를 실행합니다.
+        드라이버 프로세스는 RPC를 통해 워커 그룹의 계산 함수를 호출하여 PPO 데이터 흐름을 구성합니다.
+        경량 advantage 계산은 드라이버 프로세스에서 수행됩니다.
         """
         from verl.utils.tracking import Tracking
         from omegaconf import OmegaConf
@@ -562,6 +576,7 @@ class RayPPOTrainer(object):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
+        # 학습하기 전에 평가를 수행합니다. 
         if self.val_reward_fn is not None and self.config.trainer.get('val_before_train', True):
             val_metrics = self._validate()
             pprint(f'Initial validation metrics: {val_metrics}')
@@ -578,57 +593,70 @@ class RayPPOTrainer(object):
                 metrics = {}
                 timing_raw = {}
 
-                batch: DataProto = DataProto.from_single_dict(batch_dict)
+                batch: DataProto = DataProto.from_single_dict(batch_dict) # 데이터를 DataProto로 변환
 
                 # pop those keys for generation
-                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids'])
+                gen_batch = batch.pop(batch_keys=['input_ids', 'attention_mask', 'position_ids']) # 데이터에서 생성에 필요한 키를 제거
 
-                with _timer('step', timing_raw):
+                with _timer('step', timing_raw): # step 단계 시간 측정 시작 
                     # generate a batch
-                    with _timer('gen', timing_raw):
+                    with _timer('gen', timing_raw): # 생성 단계 시간 측정 시작
+                        # ActorRolloutWorker의 generate_sequences 메서드를 호출하여 테스트 데이터를 생성
                         gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
 
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                                                              dtype=object)
                     # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
-                    batch = batch.union(gen_batch_output)
+                    # PPO 알고리즘에서는 각 프롬프트에 대해 여러 번의 생성(generation)을 수행하여 다양한 응답을 얻는 것이 일반적입니다
+                    # 이를 위해 각 프롬프트에 대해 여러 번의 생성을 수행하고 이를 통합하여 하나의 배치로 만듭니다
+                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True) # interleave=True는 [a,a,b,b,c,c] 이런 식으로 생성됨
+                    batch = batch.union(gen_batch_output) # 생성된 데이터와 원본 데이터를 합침 
 
                     # balance the number of valid tokens on each dp rank.
                     # Note that this breaks the order of data inside the batch.
                     # Please take care when you implement group based adv computation such as GRPO and rloo
+                    # 각 dp 랭크에서 유효한 토큰 수를 균등하게 분배합니다.
+                    # 이는 데이터 내부의 순서를 깨뜨리는 것에 주의하십시오.
+                    # GRPO 및 rloo와 같은 그룹 기반 이점 계산을 구현할 때 주의하십시오.
+                    # 병렬처리 효율성을 높히는데 도움이 됨
                     self._balance_batch(batch, metrics=metrics)
 
                     # compute global_valid tokens
                     batch.meta_info['global_token_num'] = torch.sum(batch.batch['attention_mask'], dim=-1).tolist()
 
-                    if self.use_reference_policy:
+                    if self.use_reference_policy: # 기본값은 true
                         # compute reference log_prob
-                        with _timer('ref', timing_raw):
-                            ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                        with _timer('ref', timing_raw): # reference policy 단계 시간 측정 시작
+                            ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch) # ActorRolloutRefWorker의 compute_ref_log_prob 메서드를 호출하여 참조 정책의 로그 확률을 계산
                             batch = batch.union(ref_log_prob)
 
                     # compute values
-                    if self.use_critic:
-                        with _timer('values', timing_raw):
-                            values = self.critic_wg.compute_values(batch)
-                            batch = batch.union(values)
+                    if self.use_critic: # grpo에서는 사용하지 않음
+                        with _timer('values', timing_raw): # values 단계 시간 측정 시작
+                            values = self.critic_wg.compute_values(batch) # CriticWorker의 compute_values 메서드를 호출하여 값을 계산
+                            batch = batch.union(values) # 계산된 값을 데이터에 추가
 
-                    with _timer('adv', timing_raw):
+                    with _timer('adv', timing_raw): # advantage 단계 시간 측정 시작
                         # compute scores. Support both model and function-based.
                         # We first compute the scores using reward model. Then, we call reward_fn to combine
                         # the results from reward model and rule-based results.
-                        if self.use_rm:
+                        # score를 계산, reward model을 사용하여 계산할 수도, rule based reward function을 사용할 수도 있음
+                        # 먼저 reward model을 사용하여 score를 계산하고
+                        # 그 결과를 rule based reward function과 합침
+                        # reward model을 사용하지 않는 설정이면 rule based reward 만 반영됨
+
+                        if self.use_rm: # reward model이 활성화 되어 있으면; 기본값은 false
                             # we first compute reward model score
                             reward_tensor = self.rm_wg.compute_rm_score(batch)
                             batch = batch.union(reward_tensor)
 
                         # we combine with rule-based rm
-                        reward_tensor = self.reward_fn(batch)
-                        batch.batch['token_level_scores'] = reward_tensor
+                        reward_tensor = self.reward_fn(batch) # reward function을 사용하여 reward를 계산
+                        batch.batch['token_level_scores'] = reward_tensor # 계산된 reward를 데이터에 추가
 
-                        # compute rewards. apply_kl_penalty if available
-                        if not self.config.actor_rollout_ref.actor.use_kl_loss:
+                        # compute rewards. apply_kl_penalty if available # 보상 점수 계산 및 KL 페널티 적용(있으면)
+                        if not self.config.actor_rollout_ref.actor.use_kl_loss:  # GRPO에서는 use_kl_loss가 True이므로 이 블록이 실행되지 않음
+                            # actor_rollout_ref.actor.use_kl_loss는 grpo를 위해 True로 설정해야함 기본값은 False임 
                             batch, kl_metrics = apply_kl_penalty(batch,
                                                                  kl_ctrl=self.kl_ctrl,
                                                                  kl_penalty=self.config.algorithm.kl_penalty)
@@ -637,6 +665,7 @@ class RayPPOTrainer(object):
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
                         # compute advantages, executed on the driver process
+
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
                                                   gamma=self.config.algorithm.gamma,
@@ -644,7 +673,7 @@ class RayPPOTrainer(object):
                                                   num_repeat=self.config.actor_rollout_ref.rollout.n)
 
                     # update critic
-                    if self.use_critic:
+                    if self.use_critic: # grpo에서는 사용하지 않음
                         with _timer('update_critic', timing_raw):
                             critic_output = self.critic_wg.update_critic(batch)
                         critic_output_metrics = reduce_metrics(critic_output.meta_info['metrics'])
@@ -653,8 +682,9 @@ class RayPPOTrainer(object):
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
-                        with _timer('update_actor', timing_raw):
+                        with _timer('update_actor', timing_raw): # update_actor 단계 시간 측정 시작
                             actor_output = self.actor_rollout_wg.update_actor(batch)
+                            # ActorRolloutWorker의 update_actor 메서드를 호출하여 업데이트
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
 

@@ -39,7 +39,9 @@ except:
 
 def pad_dataproto_to_divisor(data: 'DataProto', size_divisor: int):
     """Pad a DataProto to size divisible by size_divisor
-
+    데이터를 size_divisor의 배수 크기로 패딩하는 함수 
+    패딩 크기는 size_divisor - len(data) % size_divisor
+    패딩은 기존 데이터를 복사하여 패딩 크기만큼 추가
     Args:
         size_divisor (int): size divisor
 
@@ -49,15 +51,19 @@ def pad_dataproto_to_divisor(data: 'DataProto', size_divisor: int):
     """
     assert isinstance(data, DataProto), 'data must be a DataProto'
     if len(data) % size_divisor != 0:
-        pad_size = size_divisor - len(data) % size_divisor
-        data_padded = DataProto.concat([data, data[:pad_size]])
+        pad_size = size_divisor - len(data) % size_divisor # 패딩 크기 계산
+        data_padded = DataProto.concat([data, data[:pad_size]]) # 패딩 데이터 생성
     else:
         pad_size = 0
         data_padded = data
-    return data_padded, pad_size
+    return data_padded, pad_size # 패딩된 데이터와 패딩 크기 반환 나중에 unpad할때 사용
 
 
 def unpad_dataproto(data: 'DataProto', pad_size):
+    """
+    패딩된 데이터를 원래 크기로 되돌리는 함수
+    패딩 크기가 0이 아닌 경우, 패딩 크기만큼 데이터를 잘라냄
+    """
     if pad_size != 0:
         data = data[:-pad_size]
     return data
