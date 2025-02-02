@@ -117,7 +117,7 @@ class ModelRunner(ModelRunner):
 
         if self.lora_config:
             assert supports_lora(self.model), f"{self.model.__class__.__name__} does not support LoRA yet."
-
+            from vllm.model_executor.models import supports_multimodal
             if supports_multimodal(self.model):
                 logger.warning("Regarding multimodal models, vLLM currently "
                                "only supports adding LoRA to language model.")

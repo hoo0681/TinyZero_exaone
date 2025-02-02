@@ -28,6 +28,7 @@ else:
     MegatronVLLMShardingManager = None
 
 if is_vllm_available():
-    from .fsdp_vllm import FSDPVLLMShardingManager
+    from .fsdp_vllm import FSDPVLLMShardingManager, FSDPVLLMShardingManager_lora
 else:
     FSDPVLLMShardingManager = None
+    FSDPVLLMShardingManager_lora = None

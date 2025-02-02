@@ -110,6 +110,8 @@ class ActorRolloutRefWorker(Worker):
                                                            self.ulysses_sequence_parallel_size)
             self.config.ref.log_prob_micro_batch_size *= self.config.rollout.n
 
+        self.with_lora = False # init_model에서 설정됨
+
     def _build_model_optimizer(self,
                                model_path,
                                fsdp_config,
@@ -117,12 +119,14 @@ class ActorRolloutRefWorker(Worker):
                                override_model_config,
                                use_remove_padding=False,
                                enable_gradient_checkpointing=False,
-                               trust_remote_code=False):
+                               trust_remote_code=False,
+                               lora_config=None):
         from verl.utils.model import print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
         from transformers import AutoModelForCausalLM, AutoConfig
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
         from torch import optim
+        from peft import LoraConfig, get_peft_model
 
         log_gpu_memory_usage('Before init from HF AutoModel', logger=logger)
         # 모델 경로를 복사하여 로컬 경로로 저장
@@ -140,6 +144,17 @@ class ActorRolloutRefWorker(Worker):
 
         # override model kwargs
         actor_model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code) # 모델 설정 초기화
+
+        if lora_config is not None:
+            # self.with_lora = True
+            peft_config = LoraConfig(
+                r=lora_config.r,
+                lora_alpha=lora_config.alpha,
+                target_modules=list(lora_config.target_modules),
+                lora_dropout=lora_config.dropout,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
 
         if use_remove_padding:
             from verl.models.registry import check_model_support_rmpad
@@ -171,6 +186,11 @@ class ActorRolloutRefWorker(Worker):
                                                                 config=actor_model_config,
                                                                 attn_implementation='flash_attention_2',
                                                                 trust_remote_code=trust_remote_code)
+            if lora_config is not None:
+                actor_module = get_peft_model(actor_module, peft_config)
+                actor_module.print_trainable_parameters()
+            else:
+                print(f'{self.role=}')
             # some parameters may not in torch_dtype. TODO(zhangchi.usc1992) remove this after we switch to fsdp2
             actor_module.to(torch_dtype)
 
@@ -214,10 +234,11 @@ class ActorRolloutRefWorker(Worker):
             sharding_strategy = ShardingStrategy.FULL_SHARD
 
         # TODO: add transformer policy
+        
         actor_module_fsdp = FSDP(
             actor_module,
             param_init_fn=init_fn,
-            use_orig_params=False,
+            use_orig_params=True if lora_config is not None else False,
             auto_wrap_policy=auto_wrap_policy,
             device_id=torch.cuda.current_device(),
             sharding_strategy=sharding_strategy,  # zero3
@@ -229,7 +250,7 @@ class ActorRolloutRefWorker(Worker):
         log_gpu_memory_usage('After Actor FSDP init', logger=logger)
 
         # TODO: add more optimizer args into config
-        if self._is_actor:
+        if self._is_actor  and optim_config: 
             from verl.utils.torch_functional import get_constant_schedule_with_warmup
             actor_optimizer = optim.AdamW(actor_module_fsdp.parameters(),
                                           lr=optim_config.lr,
@@ -263,31 +284,48 @@ class ActorRolloutRefWorker(Worker):
         if self.config.rollout.name == 'hf':
             from verl.workers.rollout import HFRollout
             from verl.workers.sharding_manager import BaseShardingManager
-            rollout = HFRollout(module=self.actor_module_fsdp, config=self.config.rollout)
+            if self.with_lora:
+                rollout = HFRollout(module=self.ref_module_fsdp, config=self.config.rollout)
+            else:
+                rollout = HFRollout(module=self.actor_module_fsdp, config=self.config.rollout)
             rollout_sharding_manager = BaseShardingManager()
             # TODO: a sharding manager that do nothing?
         elif self.config.rollout.name == 'vllm':
             from verl.workers.rollout.vllm_rollout import vLLMRollout
-            from verl.workers.sharding_manager import FSDPVLLMShardingManager
+            from verl.workers.sharding_manager import FSDPVLLMShardingManager, FSDPVLLMShardingManager_lora
             log_gpu_memory_usage('Before building vllm rollout', logger=None)
-            rollout = vLLMRollout(actor_module=self.actor_module_fsdp,
-                                  config=self.config.rollout,
-                                  tokenizer=self.tokenizer,
-                                  model_hf_config=self.actor_model_config)
+            if False:#self.with_lora:
+                rollout = vLLMRollout(actor_module=self.ref_module_fsdp,
+                                      config=self.config.rollout,
+                                      tokenizer=self.tokenizer,
+                                      model_hf_config=self.actor_model_config)
+            else:
+                rollout = vLLMRollout(actor_module=self.actor_module_fsdp,
+                                      config=self.config.rollout,
+                                      tokenizer=self.tokenizer,
+                                      model_hf_config=self.actor_model_config)
             log_gpu_memory_usage('After building vllm rollout', logger=None)
-            if torch.distributed.get_world_size() == 1:
+            if torch.distributed.get_world_size() == 1: # gpu 1개일 때?
                 self.config.rollout.load_format = 'dummy_hf'
-            rollout_sharding_manager = FSDPVLLMShardingManager(module=self.actor_module_fsdp,
-                                                               inference_engine=rollout.inference_engine,
-                                                               model_config=self.actor_model_config,
-                                                               full_params='hf' in self.config.rollout.load_format,
-                                                               device_mesh=rollout_device_mesh)
+            if False:#self.with_lora:
+                rollout_sharding_manager = FSDPVLLMShardingManager_lora(module=self.ref_module_fsdp,
+                                                                         inference_engine=rollout.inference_engine,
+                                                                         model_config=self.actor_model_config,
+                                                                         full_params='hf' in self.config.rollout.load_format, # gpu 1개일 때는 full_params=True
+                                                                         device_mesh=rollout_device_mesh)
+            else:
+                rollout_sharding_manager = FSDPVLLMShardingManager(module=self.actor_module_fsdp,
+                                                                inference_engine=rollout.inference_engine,
+                                                                model_config=self.actor_model_config,
+                                                                full_params='hf' in self.config.rollout.load_format, # gpu 1개일 때는 full_params=True
+                                                                device_mesh=rollout_device_mesh)
             log_gpu_memory_usage('After building sharding manager', logger=None)
 
         return rollout, rollout_sharding_manager
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
+        # TODO: lora 선언
         from verl.workers.actor import DataParallelPPOActor
         # This is used to import external_lib into the huggingface systems
         import_external_libs(self.config.model.get('external_lib', None))
@@ -296,7 +334,12 @@ class ActorRolloutRefWorker(Worker):
         override_model_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
 
         use_remove_padding = self.config.model.get('use_remove_padding', False)
-
+        if hasattr(self.config.actor, 'lora'):
+            lora_config = self.config.actor.lora
+            self.with_lora = True
+            print(f'{lora_config=}')
+        else:
+            lora_config = None
         if self._is_actor or self._is_rollout:
             # we need the model for actor and rollout
             if self._is_actor:
@@ -312,7 +355,8 @@ class ActorRolloutRefWorker(Worker):
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
                 enable_gradient_checkpointing=self.config.model.get('enable_gradient_checkpointing', False),
-                trust_remote_code=self.config.model.get('trust_remote_code', False))
+                trust_remote_code=self.config.model.get('trust_remote_code', False),
+                lora_config=lora_config)
 
             # get the original unwrapped module
             self.actor_module = self.actor_module_fsdp._fsdp_wrapped_module
@@ -334,6 +378,14 @@ class ActorRolloutRefWorker(Worker):
                                               actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout: # role=actor_rollout에서 활성화 됨
+            # self.ref_module_fsdp 이걸 여기서 선언하는건 좋지 않음 애초에 actor_rollout을 ref_rollout형식으로 코드를 고치는게 맞는데 어떻게 구조가 틀어질지 감이 안와서 일단 이렇게 함
+            # self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
+            #                             fsdp_config=self.config.ref.fsdp_config,
+            #                             optim_config=None,
+            #                             override_model_config=override_model_config,
+            #                             use_remove_padding=use_remove_padding,
+            #                             trust_remote_code=self.config.model.get(
+            #                                 'trust_remote_code', False))[0]
             self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref: # role=ref에서 활성화 됨
@@ -421,7 +473,10 @@ class ActorRolloutRefWorker(Worker):
             log_gpu_memory_usage('After entering rollout sharding manager', logger=logger)
 
             prompts = self.rollout_sharding_manager.preprocess_data(prompts)
-            output = self.rollout.generate_sequences(prompts=prompts)
+            if self.with_lora:
+                output = self.rollout.generate_sequences(prompts=prompts, lora_path='./test_lora')# TODO: 테스트용으로 하드코딩됨
+            else:
+                output = self.rollout.generate_sequences(prompts=prompts)
 
             log_gpu_memory_usage('After rollout generation', logger=logger)
 

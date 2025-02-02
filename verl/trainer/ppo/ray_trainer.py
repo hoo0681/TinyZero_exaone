@@ -513,10 +513,10 @@ class RayPPOTrainer(object):
 
         if self.use_critic: # grpo에서는 사용하지 않음
             self.critic_wg = all_wg['critic']
-            self.critic_wg.init_model()
+            self.critic_wg.init_model() # model 초기화
 
         if self.use_reference_policy: # 기본값은 true
-            self.ref_policy_wg = all_wg['ref'] # ActorRolloutRefWorker를 반환할 것으로 예상
+            self.ref_policy_wg = all_wg['ref'] # ActorRolloutRefWorker를 반환할 것으로 예상 KL loss를 계산하는데 사용됨
             self.ref_policy_wg.init_model() # 이건 fsdp_workers.py에 있는 init_model 메서드를 호출할 것으로 예상(메가트론을 사용하지 않는다면)
 
         if self.use_rm: # reward model이 활성화 되어 있으면; 기본값은 false
@@ -525,7 +525,7 @@ class RayPPOTrainer(object):
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg['actor_rollout'] # ActorRolloutRefWorker를 반환할 것으로 예상
-        self.actor_rollout_wg.init_model()
+        self.actor_rollout_wg.init_model() # model 초기화 여기서 lora를 load해야함
 
     def _save_checkpoint(self):
         actor_local_path = os.path.join(self.config.trainer.default_local_dir, 'actor',
@@ -602,7 +602,8 @@ class RayPPOTrainer(object):
                     # generate a batch
                     with _timer('gen', timing_raw): # 생성 단계 시간 측정 시작
                         # ActorRolloutWorker의 generate_sequences 메서드를 호출하여 테스트 데이터를 생성
-                        gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch)
+                        # actor_rollout_wg의 role은 actor_rollout이므로 여기서 generate_sequences 메서드는 vllm_rollout.py의 generate_sequences 메서드를 호출함
+                        gen_batch_output = self.actor_rollout_wg.generate_sequences(gen_batch) # gradient 없음 
 
                     batch.non_tensor_batch['uid'] = np.array([str(uuid.uuid4()) for _ in range(len(batch.batch))],
                                                              dtype=object)
@@ -683,7 +684,7 @@ class RayPPOTrainer(object):
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with _timer('update_actor', timing_raw): # update_actor 단계 시간 측정 시작
-                            actor_output = self.actor_rollout_wg.update_actor(batch)
+                            actor_output = self.actor_rollout_wg.update_actor(batch) # gradient 있음
                             # ActorRolloutWorker의 update_actor 메서드를 호출하여 업데이트
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
